@@ -1,105 +1,32 @@
 #lang racket/base
 
-(require token-bucket/private/queue)
+(require token-bucket/private/tb-process)
 
-(define-logger token-bucket)
+(struct token-bucket (th req-ch))
 
-(define (token-bucket-process init-tokens max-tokens token-evt req-ch)
-  (define (init)
-    (log-token-bucket-info "token bucket starting ~a ~a" init-tokens max-tokens)
-    (with-handlers ([exn:fail? (lambda (e)
-                                 (log-token-bucket-error "unhandled exception: ~a" e))])
-      (run init-tokens (make-waitq))))
+(define (make-default-token-evt fill-rate)
+  (define previous-time (current-milliseconds))
+  (guard-evt
+    (lambda ()
+      (handle-evt
+        (alarm-evt (+ 1000 (current-inexact-milliseconds)))
+        (lambda (ignore)
+          (define current (current-milliseconds))
+          (define tokens (* (- current previous-time) fill-rate))
+          (set! previous-time current)
+          tokens)))))
 
-  (define (token-bucket-full? num-tokens) (>= num-tokens max-tokens))
+(define (make-token-bucket fill-rate init-tokens max-tokens)
+  (define token-evt (make-default-token-evt fill-rate))
+  (define req-ch (make-channel))
+  (define process-thread
+    (thread (token-bucket-process init-tokens max-tokens token-evt req-ch)))
+  (token-bucket process-thread req-ch))
 
-  (define (run num-tokens waiters)
-    (log-token-bucket-debug "tokens: ~a; needed: ~a; max: ~a; waiters: ~a"
-                            num-tokens
-                            (if (waitq-empty? waiters) 0 (waitq-tokens waiters))
-                            max-tokens
-                            (waitq-size waiters))
-    (sync
-     (cond
-       [(token-bucket-full? num-tokens) never-evt]
-       [else
-        (handle-evt
-         token-evt
-         (lambda (amt)
-           (log-token-bucket-debug "received ~a tokens" amt)
-           (service (+ amt num-tokens) waiters)))])
-     (handle-evt
-      req-ch
-      (lambda (req)
-        (log-token-bucket-debug "received request for ~a tokens" (waiter-tokens req))
-        (service num-tokens (waitq-enqueue waiters req))))))
-
-  (define (service num-tokens waiters)
-    (cond
-      [(or (waitq-empty? waiters) (> (waitq-tokens waiters) num-tokens))
-       (run (min num-tokens max-tokens) waiters)]
-      [else
-       (define-values (w new-waiters) (waitq-dequeue waiters))
-       (define tokens-left (- num-tokens (car w)))
-       (thread
-        (lambda ()
-          (log-token-bucket-debug "signalling waiter")
-          (channel-put (waiter-channel w) #t)))
-       (service tokens-left new-waiters)]))
-  init)
-
-(define (request-tokens timeout req-ch num-tokens)
-  (define rpy-ch (make-channel))
-  (channel-put req-ch (make-waiter num-tokens rpy-ch))
-  (sync/timeout timeout rpy-ch))
-
-(module+ test
-  (require rackunit)
-
-  (define (test-with-token-bucket-process token-evt num-tokens max-tokens proc)
-    (let ()
-      (define cust (make-custodian))
-      (dynamic-wind
-       void
-       (lambda ()
-         (parameterize ([current-custodian cust])
-           (define req-ch (make-channel))
-           (define th (thread (token-bucket-process num-tokens max-tokens token-evt req-ch)))
-           (proc req-ch)))
-       (lambda ()
-         (custodian-shutdown-all cust)))))
-
-  (test-case "check no filling with no tokens"
-    (test-with-token-bucket-process
-     never-evt 0 100
-     (lambda (req-ch)
-       (check-false (request-tokens 0 req-ch 10)))))
-
-  (test-case "check no filling with full tokens"
-    (test-with-token-bucket-process
-     never-evt 100 100
-     (lambda (req-ch)
-       (check-true (request-tokens 0 req-ch 10)))))
-
-  (test-case "check no filling with taking all tokens in two requests"
-    (test-with-token-bucket-process
-     never-evt 100 100
-     (lambda (req-ch)
-       (define v1 (request-tokens #f req-ch 50))
-       (define v2 (request-tokens #f req-ch 50))
-       (check-true v1)
-       (check-true v2))))
-
-  (test-case "check fill enough for request"
-    (define fill-ch (make-channel))
-    (test-with-token-bucket-process
-     fill-ch 0 100
-     (lambda (req-ch)
-       (define v 42)
-       (define t
-         (thread (lambda () (set! v (request-tokens #f req-ch 50)))))
-       (channel-put fill-ch 50)
-       (thread-wait t)
-       (check-true v)))))
-
+(define (token-bucket-take! tb amount)
+  (request-tokens 'token-bucket-take!
+                  #f
+                  (token-bucket-th tb)
+                  (token-bucket-req-ch tb)
+                  amount))
 
