@@ -1,5 +1,9 @@
 #lang racket/base
 
+(provide token-bucket?
+         make-token-bucket
+         token-bucket-take!)
+
 (require token-bucket/private/tb-process)
 
 (struct token-bucket (th req-ch))

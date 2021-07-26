@@ -33,7 +33,7 @@
      (handle-evt
       req-ch
       (lambda (req)
-        (log-token-bucket-debug "received request for ~a tokens" (waiter-tokens req))
+        (log-token-bucket-info "received request for ~a tokens" (waiter-tokens req))
         (service num-tokens (waitq-enqueue waiters req))))))
 
   (define (service num-tokens waiters)
@@ -42,10 +42,11 @@
        (run (min num-tokens max-tokens) waiters)]
       [else
        (define-values (w new-waiters) (waitq-dequeue waiters))
-       (define tokens-left (- num-tokens (car w)))
+       (define tokens-left (- num-tokens (waiter-tokens w)))
        (thread
         (lambda ()
-          (log-token-bucket-debug "signalling waiter")
+          (log-token-bucket-info "enough tokens [~a] to signal waiter" (waiter-tokens w))
+          (log-token-bucket-info "~a tokens left" tokens-left)
           (channel-put (waiter-channel w) #t)))
        (service tokens-left new-waiters)]))
   init)
