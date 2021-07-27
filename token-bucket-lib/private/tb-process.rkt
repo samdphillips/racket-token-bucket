@@ -87,7 +87,7 @@
     (test-with-token-bucket-process
      never-evt 100 100
      (lambda (th req-ch)
-       (check-true (request-tokens 'request-tokens 0 th req-ch 10)))))
+       (check-true (request-tokens 'request-tokens 5 th req-ch 10)))))
 
   (test-case "check no filling with taking all tokens in two requests"
     (test-with-token-bucket-process
